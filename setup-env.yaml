@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-alpha
+  labels:
+    cost-center: "1001"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-beta
+  labels:
+    env: "sandbox"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: alpha-api
+  namespace: team-alpha
+  labels:
+    app: payment
+spec:
+  containers:
+  - name: nginx
+    image: nginx:alpine
+    resources:
+      limits:
+        memory: "128Mi"
+        cpu: "500m"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: beta-miner
+  namespace: team-beta
+  labels:
+    app: crypto
+spec:
+  containers:
+  - name: python-job
+    image: python:3.9-slim
+    command: ["/bin/sh"]
+    args: ["-c", "while true; do echo 'Burning money...'; sleep 10; done"]
+    resources:
+      limits:
+        memory: "512Mi"
+        cpu: "1000m"

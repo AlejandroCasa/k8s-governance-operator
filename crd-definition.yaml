@@ -1,0 +1,29 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: projectbudgets.finops.alejandro.tech
+spec:
+  group: finops.alejandro.tech
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                teamName:
+                  type: string
+                maxCpuLimit:
+                  type: string
+              required: ["teamName", "maxCpuLimit"]
+  scope: Cluster
+  names:
+    plural: projectbudgets
+    singular: projectbudget
+    kind: ProjectBudget
+    shortNames:
+    - pb

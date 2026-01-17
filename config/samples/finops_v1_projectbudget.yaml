@@ -1,0 +1,9 @@
+apiVersion: finops.acasa.acme/v1
+kind: ProjectBudget
+metadata:
+  labels:
+    app.kubernetes.io/name: k8s-governance-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: projectbudget-sample
+spec:
+  # TODO(user): Add fields here
