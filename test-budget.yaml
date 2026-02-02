@@ -1,0 +1,7 @@
+apiVersion: finops.acasa.acme/v1
+kind: ProjectBudget
+metadata:
+  name: beta-budget
+spec:
+  teamName: "team-beta"
+  maxCpuLimit: "200m"

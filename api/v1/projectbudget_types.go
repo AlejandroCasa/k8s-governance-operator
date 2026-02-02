@@ -25,29 +25,29 @@ import (
 
 // ProjectBudgetSpec defines the desired state of ProjectBudget
 type ProjectBudgetSpec struct {
-    // +kubebuilder:validation:Required
-    // +kubebuilder:validation:MinLength=1
-    // TeamName is the name of the namespace/label to govern (e.g., "team-alpha")
-    TeamName string `json:"teamName"`
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// TeamName is the name of the namespace/label to govern (e.g., "team-alpha")
+	TeamName string `json:"teamName"`
 
-    // +kubebuilder:validation:Required
-    // +kubebuilder:validation:Pattern=`^\d+(m|)$`
-    // MaxCpuLimit is the maximum total CPU allowed for the namespace (e.g., "2000m" = 2 Cores)
-    MaxCpuLimit string `json:"maxCpuLimit"`
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^\d+(m|)$`
+	// MaxCpuLimit is the maximum total CPU allowed for the namespace (e.g., "2000m" = 2 Cores)
+	MaxCpuLimit string `json:"maxCpuLimit"`
 
-    // +kubebuilder:validation:Optional
-    // +kubebuilder:validation:Pattern=`^\d+(Mi|Gi)$`
-    // MaxMemoryLimit is the maximum total Memory allowed (e.g., "4Gi")
-    MaxMemoryLimit string `json:"maxMemoryLimit,omitempty"`
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Pattern=`^\d+(Mi|Gi)$`
+	// MaxMemoryLimit is the maximum total Memory allowed (e.g., "4Gi")
+	MaxMemoryLimit string `json:"maxMemoryLimit,omitempty"`
 }
 
 // ProjectBudgetStatus defines the observed state of ProjectBudget.
 type ProjectBudgetStatus struct {
-    // CurrentCpuUsage shows the total CPU requests found in the namespace
-    CurrentCpuUsage string `json:"currentCpuUsage,omitempty"`
-    
-    // LastCheckTime is the timestamp of the last reconciliation
-    LastCheckTime string `json:"lastCheckTime,omitempty"`
+	// CurrentCpuUsage shows the total CPU requests found in the namespace
+	CurrentCpuUsage string `json:"currentCpuUsage,omitempty"`
+
+	// LastCheckTime is the timestamp of the last reconciliation
+	LastCheckTime string `json:"lastCheckTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
