@@ -51,7 +51,10 @@ var _ = Describe("ProjectBudget Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: finopsv1.ProjectBudgetSpec{
+						TeamName:    "test-team",
+						MaxCpuLimit: "1000m",
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
@@ -59,7 +62,17 @@ var _ = Describe("ProjectBudget Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &finopsv1.ProjectBudget{}
+			resource := &finopsv1.ProjectBudget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				// FIX: We must populate the Spec with valid data to pass API validation checks
+				Spec: finopsv1.ProjectBudgetSpec{
+					TeamName:    "test-team",
+					MaxCpuLimit: "1000m",
+				},
+			}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 
