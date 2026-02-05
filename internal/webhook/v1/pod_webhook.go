@@ -94,7 +94,7 @@ func (v *PodCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Obj
 			}
 		}
 	}
-	d
+
 	// 4. Business Decision (Enforcement)
 	limitQuantity, _ := resource.ParseQuantity(activeBudget.Spec.MaxCpuLimit)
 	limitMilli := limitQuantity.MilliValue()
