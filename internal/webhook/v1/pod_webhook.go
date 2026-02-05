@@ -50,11 +50,11 @@ func (v *PodCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Obj
 
 	podlog.Info("Validating Pod creation for Financial Compliance", "name", pod.Name, "namespace", pod.Namespace)
 
-	// 1. Buscar si hay presupuesto para este namespace
+	// 1. Search for a budget for this namespace
 	var budgetList finopsv1.ProjectBudgetList
 	if err := v.Client.List(ctx, &budgetList); err != nil {
 		podlog.Error(err, "Failed to list budgets, allowing pod safely")
-		return nil, nil // Fail-open (si falla la API, dejamos pasar para no romper el cluster)
+		return nil, nil // Fail-open
 	}
 
 	var activeBudget *finopsv1.ProjectBudget
@@ -65,12 +65,12 @@ func (v *PodCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Obj
 		}
 	}
 
-	// Si no hay presupuesto, permitimos todo
+	// If no budget is found, we allow everything (fail-open)
 	if activeBudget == nil {
 		return nil, nil
 	}
 
-	// 2. Calcular coste del nuevo Pod
+	// 2. Calculate the cost of the new Pod based on CPU limits (you can expand this to include memory or other resources)
 	var newPodCost int64 = 0
 	for _, container := range pod.Spec.Containers {
 		cpu := container.Resources.Limits.Cpu()
@@ -79,7 +79,7 @@ func (v *PodCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Obj
 		}
 	}
 
-	// 3. Calcular uso actual del Namespace
+	// 3. Calculate current usage of the Namespace by summing CPU limits of all existing Pods in the same namespace
 	var existingPods corev1.PodList
 	if err := v.Client.List(ctx, &existingPods, client.InNamespace(pod.Namespace)); err != nil {
 		return nil, fmt.Errorf("failed to list existing pods: %v", err)
@@ -94,8 +94,8 @@ func (v *PodCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Obj
 			}
 		}
 	}
-
-	// 4. Decisión de Negocio (Bloqueo)
+	d
+	// 4. Business Decision (Enforcement)
 	limitQuantity, _ := resource.ParseQuantity(activeBudget.Spec.MaxCpuLimit)
 	limitMilli := limitQuantity.MilliValue()
 
@@ -106,8 +106,8 @@ func (v *PodCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Obj
 			pod.Namespace, currentUsage, limitMilli, newPodCost)
 
 		podlog.Info(violationMsg)
-		// Retornar error aquí es lo que bloquea el 'kubectl apply' del usuario
-		return nil, fmt.Errorf(violationMsg)
+		// Return an error here to block the pod creation. The message will be shown to the user.
+		return nil, fmt.Errorf("%s", violationMsg)
 	}
 
 	return nil, nil

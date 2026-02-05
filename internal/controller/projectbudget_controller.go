@@ -107,7 +107,7 @@ func (r *ProjectBudgetReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	// 6. Update the ProjectBudget status (visual feedback for the user)
 	projectBudget.Status.CurrentCpuUsage = fmt.Sprintf("%dm", totalCpuUsage)
-	projectBudget.Status.LastCheckTime = fmt.Sprintf("%s", "Just Now") // Simplified
+	projectBudget.Status.LastCheckTime = "Just Now"
 
 	if err := r.Status().Update(ctx, &projectBudget); err != nil {
 		logger.Error(err, "Failed to update ProjectBudget status")
