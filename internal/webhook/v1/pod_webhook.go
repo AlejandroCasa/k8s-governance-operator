@@ -13,12 +13,39 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	// Importa tu API de ProjectBudget
 	finopsv1 "github.com/AlejandroCasa/k8s-governance-operator/api/v1"
+	"github.com/prometheus/client_golang/prometheus"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 // log is for logging in this package.
 var podlog = logf.Log.WithName("pod-resource")
+
+// --- METRICS DEFINITION START ---
+var (
+	// Metric 1: Counter of rejections by namespace
+	rejectedPods = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "finops_rejected_pods_total",
+			Help: "Total number of pods rejected by the FinOps operator due to budget overflow",
+		},
+		[]string{"team_namespace"},
+	)
+
+	// Metric 2: Counter of CPU millicores saved by preventing pod creation
+	savedCpu = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "finops_saved_cpu_millicores_total",
+			Help: "Total CPU millicores saved/prevented from being provisioned",
+		},
+		[]string{"team_namespace"},
+	)
+)
+
+func init() {
+	// Register the metrics in the global registry of controller-runtime
+	metrics.Registry.MustRegister(rejectedPods, savedCpu)
+}
 
 // SetupPodWebhookWithManager registers the webhook for Pod in the manager.
 func SetupPodWebhookWithManager(mgr ctrl.Manager) error {
@@ -106,6 +133,13 @@ func (v *PodCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Obj
 			pod.Namespace, currentUsage, limitMilli, newPodCost)
 
 		podlog.Info(violationMsg)
+
+		// Increase the counter of rejections for this team
+		rejectedPods.WithLabelValues(pod.Namespace).Inc()
+
+		// Sume the cost we just prevented (CPU saved)
+		savedCpu.WithLabelValues(pod.Namespace).Add(float64(newPodCost))
+
 		// Return an error here to block the pod creation. The message will be shown to the user.
 		return nil, fmt.Errorf("%s", violationMsg)
 	}
