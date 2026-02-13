@@ -1,161 +1,131 @@
-# 🛡️ K8s FinOps Governance Operator
+# K8s FinOps Operator 🛡️💰
 
-> **Radical Truth for Kubernetes Costs:** Stop cost overruns *before* they happen.
+**A Kubernetes Operator designed to enforce budget constraints and optimize resource allocation automatically.**
 
-![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat&logo=go)
-![Kubernetes](https://img.shields.io/badge/Kubernetes-v1.30+-326CE5?style=flat&logo=kubernetes)
-![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-56%25-yellow)
+## 🚀 Overview
 
-## 📋 Overview
+The **K8s FinOps Operator** brings financial governance directly into the Kubernetes cluster. It introduces the `ProjectBudget` Custom Resource Definition (CRD), allowing platform engineers to define CPU/Memory limits per namespace (or team).
 
-The **K8s FinOps Governance Operator** is a Kubernetes-native controller designed to enforce strict financial boundaries at the infrastructure level. Unlike traditional FinOps tools that *report* costs after the fact (bill shock), this operator implements **Pre-emptive Cost Control**.
+Unlike standard ResourceQuotas, this operator is **active and intelligent**:
 
-It uses a **Validating Webhook** to intercept every Pod creation request, calculates the projected cost against a defined `ProjectBudget` CRD, and **rejects** workloads that would violate financial policies.
-
-### The Problem it Solves
-* **"The Cloud Bill Shock":** Developers deploying over-provisioned resources without limits.
-* **"The Tragedy of the Commons":** Teams consuming shared cluster resources without accountability.
-
-### The Solution
-* **Zero-Inference Enforcement:** If the budget is full, the Pod is denied. No exceptions.
-* **Real-Time ROI Tracking:** Built-in Prometheus metrics to quantify "saved" costs immediately.
-
----
-
-## 🚀 Key Features
-
-* **⚡ Admission Control Logic:** Intercepts Pods in <20ms to validate CPU requests against team budgets.
-* **💰 ProjectBudget CRD:** Custom resource to define financial limits per team/namespace (e.g., `team-beta` gets `2000m` CPU).
-* **📊 Native Observability:** Exposes custom Prometheus metrics to track denied pods and saved CPU resources.
-* **✅ Fail-Safe Architecture:** Designed to "fail-open" if no budget is present, ensuring critical operations aren't blocked by misconfiguration.
-* **🧪 Engineering Excellence:** Fully tested with Unit Tests (Controller logic) and E2E Tests (Kind cluster integration).
-
----
+1. **Validating Webhook:** Rejects Pods that exceed the budget.
+2. **Mutating Webhook ("Auto-Sizer"):** Automatically resizes Pod requests/limits to fit into the remaining budget if possible, preventing rejection and maximizing resource utilization.
+3. **Metrics:** Exposes Prometheus metrics for budget tracking and rejected operations.
 
 ## 🛠️ Architecture
 
-```mermaid
-graph LR
-    User[Developer] -->|kubectl apply| API[K8s API Server]
-    API -->|ValidatingWebhook| Operator[FinOps Operator]
-    Operator -->|Get| CRD[ProjectBudget]
-    Operator -->|Calculate Usage| Logic{Is Budget Exceeded?}
-    Logic -->|Yes| Deny[Block & Alert]
-    Logic -->|No| Allow[Create Pod]
-    Deny -->|Record| Prom[Prometheus Metrics]
+The operator follows the Kubernetes Controller pattern and utilizes the `controller-runtime` library.
 
-```
+* **Controller:** Reconciles `ProjectBudget` objects and calculates current usage.
+* **Mutating Webhook (`/mutate--v1-pod`):** Intercepts `CREATE` requests. If a Pod requests more CPU than available, but fits within the remainder, it **rewrites the Pod spec** on the fly.
+* **Validating Webhook (`/validate--v1-pod`):** The final gatekeeper. If the Pod (original or mutated) still exceeds the budget, the request is **DENIED**.
 
----
+## ✨ Key Features
 
-## 🚦 Quick Start
+* **Namespace-level Budgeting:** Define `MaxCpuLimit` and `MaxMemoryLimit` for specific teams.
+* **Intelligent Auto-Resizing:**
+* *Scenario:* Budget has 200m left. User requests 400m.
+* *Action:* Operator modifies the Pod to 200m automatically.
+* *Result:* Pod starts successfully instead of failing.
+
+
+* **Strict Enforcement:** Blocks deployments that physically cannot fit the budget.
+* **Observability:**
+* `finops_rejected_pods_total`: Counter of blocked pods.
+* `finops_saved_cpu_millicores_total`: Counter of CPU saved by rejection/resizing.
+
+
+
+## 📦 Installation
 
 ### Prerequisites
 
-* Kubernetes Cluster (v1.28+)
-* `kubectl` installed
-* `make`
+* Kubernetes Cluster (v1.25+)
+* kubectl
+* cert-manager (required for Webhook TLS)
 
-### Installation
+### Quick Start
 
-Deploy the operator to your cluster:
-
-```bash
-# 1. Install CRDs and Deploy Controller
-make deploy IMG=acasa93/k8s-finops-operator:v0.5.0
+1. **Clone the repository:**
+```sh
+git clone https://github.com/YOUR_USERNAME/k8s-governance-operator.git
+cd k8s-governance-operator
 
 ```
 
-### Usage Example
 
-1. **Define a Budget:** Create a strict limit for a team.
+2. **Deploy the Operator:**
+```sh
+make deploy IMG=acasa93/k8s-finops-operator:v0.11.0
+
+```
+
+
+3. **Verify Installation:**
+```sh
+kubectl get pods -n k8s-governance-operator-system
+
+```
+
+
+
+## 💡 Usage Example
+
+### 1. Define a Budget
+
+Create a budget for `team-beta` allowing only 500 millicores of CPU.
 
 ```yaml
-# budget.yaml
 apiVersion: finops.acasa.acme/v1
 kind: ProjectBudget
 metadata:
   name: beta-budget
 spec:
-  teamName: "team-beta"
-  maxCpuLimit: "200m" # Strict limit
+  teamName: team-beta
+  maxCpuLimit: "500m"
+  validationMode: Enforce
 
 ```
 
-2. **Apply it:**
+### 2. The "Mutating" Magic
 
-```bash
-kubectl apply -f budget.yaml
+Assume 300m are already used. Only **200m** remain.
+
+If you try to deploy a Pod requesting **400m** with the auto-resize annotation:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hungry-pod
+  namespace: team-beta
+  annotations:
+    finops.acasa.acme/auto-resize: "true"
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+    resources:
+      limits:
+        cpu: "400m" # Requesting 400m
+      requests:
+        cpu: "10m"
 
 ```
 
-3. **Attempt a Violation:** Try to deploy a pod that exceeds the limit.
+**Result:** The Pod is created, but `kubectl get pod hungry-pod -o yaml` will show **`limits: cpu: 200m`**. The operator intervened and saved the deployment.
 
-```bash
-# This requires 500m, but limit is 200m.
-kubectl run fatal-attack --image=nginx --restart=Never -n team-beta --limits=cpu=500m
+## 📊 Metrics
 
-```
-
-4. **Result:**
+Prometheus metrics are exposed on port `:8443/metrics`.
 
 ```text
-Error from server (Forbidden): admission webhook "vpod.kb.io" denied the request: 
-DENIED by FinOps: Budget exceeded for team 'team-beta'. Used: 0m, Limit: 200m, Request: 500m
+# HELP finops_rejected_pods_total Total number of pods rejected by the FinOps operator
+# TYPE finops_rejected_pods_total counter
+finops_rejected_pods_total{team_namespace="team-beta"} 1
 
 ```
 
----
+## 🛡️ License
 
-## 📈 Observability & Metrics
-
-The operator instruments every decision. Connect Prometheus to port `8443` to visualize the ROI.
-
-| Metric Name | Type | Description |
-| --- | --- | --- |
-| `finops_rejected_pods_total` | Counter | Total number of pods blocked due to budget overflow. |
-| `finops_saved_cpu_millicores_total` | Counter | Total CPU (millicores) prevented from being provisioned ("Money Saved"). |
-
-**Manual Verification:**
-You can query the metrics endpoint securely using the service account token:
-
-```bash
-# 1. Forward the metrics port
-kubectl port-forward svc/k8s-governance-operator-controller-manager-metrics-service -n k8s-governance-operator-system 8443:8443
-
-# 2. Get a valid token
-TOKEN=$(kubectl create token k8s-governance-operator-controller-manager -n k8s-governance-operator-system)
-
-# 3. Query metrics
-curl -k -H "Authorization: Bearer $TOKEN" https://localhost:8443/metrics | grep finops
-
-```
-
----
-
-## 🧪 Testing Strategy
-
-This project enforces a strict testing pyramid:
-
-* **Unit Tests:** Validate reconciliation loops and webhook logic.
-```bash
-make test
-
-```
-
-
-* **E2E Tests:** Spin up a local Kind cluster, install the operator, and run live attack scenarios.
-```bash
-make test-e2e
-
-```
-
-
-
----
-
-## 📜 License
-
-Copyright 2026 Alejandro Casa.
-Licensed under the Apache License, Version 2.0.
+Copyright 2026. Distributed under the Apache 2.0 License.
