@@ -7,13 +7,20 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
   - pods
   verbs:
   - get
   - list
   - watch
 - apiGroups:
-  - finops.acasa.acme
+  - ""
   resources:
   - projectbudgets
   verbs:
@@ -25,16 +32,24 @@ rules:
   - update
   - watch
 - apiGroups:
-  - finops.acasa.acme
+  - ""
   resources:
   - projectbudgets/finalizers
   verbs:
   - update
 - apiGroups:
-  - finops.acasa.acme
+  - ""
   resources:
   - projectbudgets/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - finops.acasa.acme
+  resources:
+  - projectbudgets
+  verbs:
+  - get
+  - list
+  - watch

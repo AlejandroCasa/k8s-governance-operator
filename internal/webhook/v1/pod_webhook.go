@@ -7,6 +7,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -52,16 +53,25 @@ func SetupPodWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(&corev1.Pod{}).
 		WithValidator(&PodCustomValidator{
-			Client: mgr.GetClient(),
+			Client:   mgr.GetClient(),
+			Decoder:  admission.NewDecoder(mgr.GetScheme()),
+			Recorder: mgr.GetEventRecorderFor("finops-webhook"),
+		}).
+		WithDefaulter(&PodCustomValidator{
+			Client:   mgr.GetClient(),
+			Recorder: mgr.GetEventRecorderFor("finops-webhook"),
 		}).
 		Complete()
 }
 
-// +kubebuilder:webhook:path=/validate--v1-pod,mutating=false,failurePolicy=fail,sideEffects=None,groups=core,resources=pods,verbs=create;update,versions=v1,name=vpod.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/mutate--v1-pod,mutating=true,failurePolicy=fail,sideEffects=None,groups="",resources=pods,verbs=create;update,versions=v1,name=mpod.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate--v1-pod,mutating=false,failurePolicy=fail,sideEffects=None,groups="",resources=pods,verbs=create;update,versions=v1,name=vpod.kb.io,admissionReviewVersions=v1
 
 // PodCustomValidator struct
 type PodCustomValidator struct {
-	Client client.Client // Necesitamos el cliente para leer ProjectBudgets
+	Client   client.Client
+	Decoder  admission.Decoder
+	Recorder record.EventRecorder
 }
 
 var _ webhook.CustomValidator = &PodCustomValidator{}
@@ -69,6 +79,86 @@ var _ webhook.CustomValidator = &PodCustomValidator{}
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type Pod.
 // +kubebuilder:rbac:groups=finops.acasa.acme,resources=projectbudgets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+
+// Default implements admission.CustomDefaulter.
+// This function is called BEFORE validation. It allows us to modify the Pod on the fly.
+func (v *PodCustomValidator) Default(ctx context.Context, obj runtime.Object) error {
+	pod, ok := obj.(*corev1.Pod)
+	if !ok {
+		return fmt.Errorf("expected a Pod but got a %T", obj)
+	}
+
+	// 1. Safety Check: Only mutate if the user explicitly asks for it via Annotation.
+	// We don't want to surprise users by shrinking their databases silently.
+	if pod.Annotations["finops.acasa.acme/auto-resize"] != "true" {
+		return nil
+	}
+
+	podlog.Info("Mutating Pod: Checking for auto-sizing opportunities", "name", pod.Name)
+
+	// 2. Find the Budget
+	var budgetList finopsv1.ProjectBudgetList
+	if err := v.Client.List(ctx, &budgetList); err != nil {
+		return nil // If we can't list budgets, we don't touch anything
+	}
+
+	var activeBudget *finopsv1.ProjectBudget
+	for _, b := range budgetList.Items {
+		if b.Spec.TeamName == pod.Namespace {
+			activeBudget = &b
+			break
+		}
+	}
+	if activeBudget == nil {
+		return nil
+	}
+
+	// 3. Calculate Remaining Budget
+	currentCpu, _, err := v.calculateCurrentUsage(ctx, pod.Namespace)
+	if err != nil {
+		return nil
+	}
+
+	limitCpuQuantity, _ := resource.ParseQuantity(activeBudget.Spec.MaxCpuLimit)
+	limitCpuMilli := limitCpuQuantity.MilliValue()
+	remainingCpu := limitCpuMilli - currentCpu
+
+	// If there is no budget left, we can't do anything (Validation will fail later)
+	if remainingCpu <= 0 {
+		return nil
+	}
+
+	// 4. Check if the Pod fits. If not, Resize it.
+	// NOTE: For simplicity, we only resize the FIRST container.
+	// Complex logic would distribute the cut across all containers.
+	if len(pod.Spec.Containers) > 0 {
+		container := &pod.Spec.Containers[0]
+		requestCpu := container.Resources.Limits.Cpu()
+
+		if requestCpu != nil && requestCpu.MilliValue() > remainingCpu {
+			oldCpu := requestCpu.MilliValue()
+
+			// MUTATION HAPPENS HERE: We overwrite the requested limit with the remaining budget
+			newLimit := resource.NewMilliQuantity(remainingCpu, resource.DecimalSI)
+			container.Resources.Limits[corev1.ResourceCPU] = *newLimit
+
+			msg := fmt.Sprintf("Auto-Sized Pod CPU from %dm to %dm to fit budget", oldCpu, remainingCpu)
+			podlog.Info(msg)
+
+			// Add an annotation so the user knows we touched it
+			if pod.Annotations == nil {
+				pod.Annotations = make(map[string]string)
+			}
+			pod.Annotations["finops.acasa.acme/resized"] = "true"
+
+			// Record event
+			v.Recorder.Event(activeBudget, "Normal", "PodAutoSized", msg)
+		}
+	}
+
+	return nil
+}
+
 func (v *PodCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	pod, ok := obj.(*corev1.Pod)
 	if !ok {
@@ -97,51 +187,122 @@ func (v *PodCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Obj
 		return nil, nil
 	}
 
-	// 2. Calculate the cost of the new Pod based on CPU limits (you can expand this to include memory or other resources)
-	var newPodCost int64 = 0
+	// 2. Calculate the cost of the NEW Pod (CPU & Memory)
+	var newPodCpuCost int64 = 0
+	var newPodMemCost int64 = 0
+
 	for _, container := range pod.Spec.Containers {
-		cpu := container.Resources.Limits.Cpu()
-		if cpu != nil {
-			newPodCost += cpu.MilliValue()
+		// CPU Calculation
+		if cpu := container.Resources.Limits.Cpu(); cpu != nil {
+			newPodCpuCost += cpu.MilliValue()
+		}
+		// Memory Calculation
+		if mem := container.Resources.Limits.Memory(); mem != nil {
+			newPodMemCost += mem.Value()
 		}
 	}
 
-	// 3. Calculate current usage of the Namespace by summing CPU limits of all existing Pods in the same namespace
+	// 3. Calculate CURRENT usage of the Namespace (CPU & Memory)
 	var existingPods corev1.PodList
 	if err := v.Client.List(ctx, &existingPods, client.InNamespace(pod.Namespace)); err != nil {
 		return nil, fmt.Errorf("failed to list existing pods: %v", err)
 	}
 
-	var currentUsage int64 = 0
+	var currentCpuUsage int64 = 0
+	var currentMemUsage int64 = 0
+
 	for _, p := range existingPods.Items {
+		// Only count running or pending pods (ignore completed/failed ones)
+		if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
+			continue
+		}
+
 		for _, c := range p.Spec.Containers {
-			cpu := c.Resources.Limits.Cpu()
-			if cpu != nil {
-				currentUsage += cpu.MilliValue()
+			// CPU Sum
+			if cpu := c.Resources.Limits.Cpu(); cpu != nil {
+				currentCpuUsage += cpu.MilliValue()
+			}
+			// Memory Sum
+			if mem := c.Resources.Limits.Memory(); mem != nil {
+				currentMemUsage += mem.Value()
 			}
 		}
 	}
 
-	// 4. Business Decision (Enforcement)
-	limitQuantity, _ := resource.ParseQuantity(activeBudget.Spec.MaxCpuLimit)
-	limitMilli := limitQuantity.MilliValue()
+	// 4. Enforcement Logic: CPU Check
+	limitCpuQuantity, _ := resource.ParseQuantity(activeBudget.Spec.MaxCpuLimit)
+	limitCpuMilli := limitCpuQuantity.MilliValue()
+	totalCpuAfter := currentCpuUsage + newPodCpuCost
 
-	totalAfterDeployment := currentUsage + newPodCost
+	if totalCpuAfter > limitCpuMilli {
+		violationMsg := fmt.Sprintf("DENIED by FinOps: CPU Budget exceeded for team '%s'. Used: %dm, Limit: %dm, Request: %dm",
+			pod.Namespace, currentCpuUsage, limitCpuMilli, newPodCpuCost)
 
-	if totalAfterDeployment > limitMilli {
-		violationMsg := fmt.Sprintf("DENIED by FinOps: Budget exceeded for team '%s'. Used: %dm, Limit: %dm, Request: %dm",
-			pod.Namespace, currentUsage, limitMilli, newPodCost)
+		if activeBudget.Spec.ValidationMode == finopsv1.DryRunMode {
+			dryRunMsg := fmt.Sprintf("[DRY-RUN] Violation detected but allowed: %s", violationMsg)
+			podlog.Info(dryRunMsg)
+
+			// We emit a specific event so the admin knows it WOULD have failed
+			v.Recorder.Event(activeBudget, "Warning", "DryRunViolation", dryRunMsg)
+
+			// Metrics: We can still count it as rejected in metrics, or create a new metric "potential_savings"
+			// For now, let's keep counting it to see the impact
+			rejectedPods.WithLabelValues(pod.Namespace).Inc()
+
+			// CRITICAL: Return nil means "ALLOW"
+			return nil, nil
+		}
 
 		podlog.Info(violationMsg)
 
-		// Increase the counter of rejections for this team
+		// Record the event in the ProjectBudget CRD
+		v.Recorder.Event(activeBudget, "Warning", "BudgetExceeded", violationMsg)
+
+		// Metrics
 		rejectedPods.WithLabelValues(pod.Namespace).Inc()
+		savedCpu.WithLabelValues(pod.Namespace).Add(float64(newPodCpuCost))
 
-		// Sume the cost we just prevented (CPU saved)
-		savedCpu.WithLabelValues(pod.Namespace).Add(float64(newPodCost))
-
-		// Return an error here to block the pod creation. The message will be shown to the user.
 		return nil, fmt.Errorf("%s", violationMsg)
+	}
+
+	// 5. Enforcement Logic: Memory Check (New Feature)
+	if activeBudget.Spec.MaxMemoryLimit != "" {
+		limitMemQuantity, err := resource.ParseQuantity(activeBudget.Spec.MaxMemoryLimit)
+		if err != nil {
+			podlog.Error(err, "Invalid memory limit format in ProjectBudget", "budget", activeBudget.Name)
+			// We don't block if the budget is malformed, just log error (Fail-Open behavior)
+		} else {
+			limitMemBytes := limitMemQuantity.Value()
+			totalMemAfter := currentMemUsage + newPodMemCost
+
+			if totalMemAfter > limitMemBytes {
+				violationMsg := fmt.Sprintf("DENIED by FinOps: RAM Budget exceeded for team '%s'. Used: %d bytes, Limit: %d bytes, Request: %d bytes",
+					pod.Namespace, currentMemUsage, limitMemBytes, newPodMemCost)
+
+				if activeBudget.Spec.ValidationMode == finopsv1.DryRunMode {
+					dryRunMsg := fmt.Sprintf("[DRY-RUN] Violation detected but allowed: %s", violationMsg)
+					podlog.Info(dryRunMsg)
+
+					// We emit a specific event so the admin knows it WOULD have failed
+					v.Recorder.Event(activeBudget, "Warning", "DryRunViolation", dryRunMsg)
+
+					// Metrics: We can still count it as rejected in metrics, or create a new metric "potential_savings"
+					// For now, let's keep counting it to see the impact
+					rejectedPods.WithLabelValues(pod.Namespace).Inc()
+
+					// CRITICAL: Return nil means "ALLOW"
+					return nil, nil
+				}
+
+				podlog.Info(violationMsg)
+
+				// Record the event in the ProjectBudget CRD
+				v.Recorder.Event(activeBudget, "Warning", "BudgetExceeded", violationMsg)
+
+				// Note: We could add a 'savedMemory' metric here in the future
+				return nil, fmt.Errorf("%s", violationMsg)
+			}
+		}
 	}
 
 	return nil, nil
@@ -156,4 +317,33 @@ func (v *PodCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj 
 // ValidateDelete implements webhook.CustomValidator.
 func (v *PodCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	return nil, nil
+}
+
+// calculateCurrentUsage sums up the CPU and Memory limits of all active Pods in the namespace.
+// Returns: (cpuMillis, memoryBytes, error)
+func (v *PodCustomValidator) calculateCurrentUsage(ctx context.Context, namespace string) (int64, int64, error) {
+	var existingPods corev1.PodList
+	if err := v.Client.List(ctx, &existingPods, client.InNamespace(namespace)); err != nil {
+		return 0, 0, err
+	}
+
+	var currentCpuUsage int64 = 0
+	var currentMemUsage int64 = 0
+
+	for _, p := range existingPods.Items {
+		// Only count running or pending pods (ignore completed/failed ones)
+		if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
+			continue
+		}
+
+		for _, c := range p.Spec.Containers {
+			if cpu := c.Resources.Limits.Cpu(); cpu != nil {
+				currentCpuUsage += cpu.MilliValue()
+			}
+			if mem := c.Resources.Limits.Memory(); mem != nil {
+				currentMemUsage += mem.Value()
+			}
+		}
+	}
+	return currentCpuUsage, currentMemUsage, nil
 }

@@ -36,10 +36,11 @@ type ProjectBudgetReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=finops.acasa.acme,resources=projectbudgets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=finops.acasa.acme,resources=projectbudgets/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=finops.acasa.acme,resources=projectbudgets/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=projectbudgets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=projectbudgets/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups="",resources=projectbudgets/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.

@@ -22,6 +22,14 @@ import (
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+type ValidationMode string
+
+const (
+	// EnforceMode blocks the pod creation if budget is exceeded
+	EnforceMode ValidationMode = "Enforce"
+	// DryRunMode allows the pod but logs the violation
+	DryRunMode ValidationMode = "DryRun"
+)
 
 // ProjectBudgetSpec defines the desired state of ProjectBudget
 type ProjectBudgetSpec struct {
@@ -39,6 +47,10 @@ type ProjectBudgetSpec struct {
 	// +kubebuilder:validation:Pattern=`^\d+(Mi|Gi)$`
 	// MaxMemoryLimit is the maximum total Memory allowed (e.g., "4Gi")
 	MaxMemoryLimit string `json:"maxMemoryLimit,omitempty"`
+
+	// +kubebuilder:validation:Enum=Enforce;DryRun
+	// +kubebuilder:default=Enforce
+	ValidationMode ValidationMode `json:"validationMode,omitempty"`
 }
 
 // ProjectBudgetStatus defines the observed state of ProjectBudget.
